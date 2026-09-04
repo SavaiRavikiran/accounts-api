@@ -32,6 +32,7 @@ id_rsa*
 .idea/
 .vscode/
 *.swp
+.claude/
 
 # Test / scan output
 /tmp/

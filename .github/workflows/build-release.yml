@@ -116,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: sigstore/cosign-installer@v3
-      - name: Verify signature and SBOM attestation before anything downstream trusts this image
+      - name: Verify cosign signature before anything downstream trusts this image
         env:
           IMAGE_REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
         run: |
@@ -125,11 +125,16 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${IMAGE_REF}"
 
-          cosign verify-attestation \
-            --type spdxjson \
-            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build-release.yml@refs/heads/main" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${IMAGE_REF}"
+      - name: Verify SBOM attestation (GitHub native attestations, not a cosign-format attestation)
+        # actions/attest-sbom writes through GitHub's own Artifact Attestations
+        # API (Sigstore-backed, but a different storage/verification path than
+        # cosign's own `verify-attestation`) — `gh attestation verify` is the
+        # matching verifier, same as a reviewer would run by hand.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
+        run: |
+          gh attestation verify "oci://${IMAGE_REF}" --owner "${GITHUB_REPOSITORY_OWNER}"
 
   deploy:
     needs: [build, verify]
