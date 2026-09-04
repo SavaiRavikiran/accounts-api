@@ -1,0 +1,11 @@
+title = "accounts-api gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "known-safe fixtures"
+paths = [
+  '''scripts/test-fixtures/.*''',
+  '''waivers/example-.*\.yaml''',
+]

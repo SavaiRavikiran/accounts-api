@@ -1,0 +1,25 @@
+# T-09: the workload SA cannot list Secrets or mutate the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: accounts-api
+  namespace: accounts
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["accounts-api"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: accounts-api
+  namespace: accounts
+subjects:
+  - kind: ServiceAccount
+    name: accounts-api
+    namespace: accounts
+roleRef:
+  kind: Role
+  name: accounts-api
+  apiGroup: rbac.authorization.k8s.io

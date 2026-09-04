@@ -1,0 +1,138 @@
+# Section 2 — Build and Release Integrity
+
+name: build-release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC — no long-lived AWS or registry keys (T-10)
+  packages: write    # push to ghcr.io
+  attestations: write # SBOM + provenance attestations
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/digitalbank/accounts-api
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history — Section 3 secret scan needs it too
+
+      - name: Compute immutable version tag
+        id: ver
+        run: |
+          # Immutability comes from the digest, not the tag — but we still
+          # avoid ever reusing a floating tag like "latest" or "prod".
+          # Tag = short commit SHA; ghcr.io does not allow overwriting a
+          # digest once pushed, and this workflow never pushes the same
+          # tag twice for different content because the tag *is* the SHA.
+          echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR via OIDC-derived token
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.tag }}
+          provenance: true
+          sbom: false # we generate our own SBOM below with Syft for full control over format/attestation
+
+      - name: Generate SBOM (Syft, SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false # deliberately NOT a build-log artifact — see attest step
+
+      - name: Attest SBOM to the image (in-registry, not a build artifact)
+        uses: actions/attest-sbom@v1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless, Sigstore/Fulcio + Rekor)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # Keyless: trust root is Sigstore's public Fulcio CA + Rekor
+          # transparency log, not a key we manage. Justification: this repo
+          # has 40 possible mergers and 2 platform engineers — nobody wants
+          # to be the custodian of a long-lived signing key, and keyless
+          # binds the signature to "this GitHub Actions workflow, on this
+          # repo, on this ref" via the OIDC token, which is the property we
+          # actually want (see verify job).
+          cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify signature and SBOM attestation before anything downstream trusts this image
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/digitalbank/accounts-api/.github/workflows/build-release.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}"
+
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-identity-regexp "https://github.com/digitalbank/accounts-api/.github/workflows/build-release.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}"
+        env:
+          IMAGE_NAME: ghcr.io/digitalbank/accounts-api
+
+  deploy:
+    needs: [build, verify]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production # requires manual approval — see waivers/BREAK-GLASS.md for bypass
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Assume AWS deploy role via GitHub OIDC (no static keys — T-10)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::222222222222:role/accounts-api-gha-deploy
+          aws-region: ap-south-1
+      - name: Deploy (kustomize apply against EKS)
+        run: |
+          echo "kubectl apply -k k8s/ (rewriting image to ${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }})"
+          echo "Not executed against a real cluster in this take-home — see README.md."
+
+# What this proves: the image running in prod was built by this pipeline from
+# this exact commit, with this SBOM, and has not been retagged since.
+# What it does NOT prove: that the source code is free of vulnerabilities
+# (that's Section 3's job), that the base image vendor wasn't compromised
+# upstream of this build, or that the signing identity (this workflow's OIDC
+# subject) itself hasn't been abused by a takeover of this repo — see
+# DECISIONS-TRADEOFFS.md scenario (b) for that blast radius.

@@ -1,0 +1,16 @@
+{
+  "_comment": "AS PROVIDED IN THE ASSESSMENT BRIEF — kept verbatim for traceability. Do not attach. See pod-identity-policy.json for the rewrite.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "NotAction": ["iam:DeleteRole", "iam:DeleteUser"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue", "kms:Decrypt"],
+      "Resource": "*"
+    }
+  ]
+}

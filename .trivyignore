@@ -1,0 +1,3 @@
+# CVE IDs listed here MUST have a matching waivers/<id>.yaml — this file has
+# no independent authority; scripts/check-waivers.sh is what makes an entry
+# here temporary rather than a permanent silent suppression.

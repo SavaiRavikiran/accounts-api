@@ -1,0 +1,52 @@
+# Run with: kyverno test admission/kyverno/tests
+# (Not executed in this environment — no kyverno CLI available locally; see README.md.
+#  Expected results below were verified by hand against the policy patterns.)
+name: accounts-api-admission-baseline
+policies:
+  - ../policy-baseline.yaml
+resources:
+  - bad-deployment.yaml
+  - good-deployment.yaml
+results:
+  - policy: disallow-host-namespaces-and-hostpath
+    rule: no-host-network-pid-ipc
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: bad-deployment.yaml
+    result: fail
+  - policy: disallow-host-namespaces-and-hostpath
+    rule: no-hostpath-volumes
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: bad-deployment.yaml
+    result: fail
+  - policy: require-restricted-securitycontext
+    rule: require-non-root-and-readonly-fs
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: bad-deployment.yaml
+    result: fail
+  - policy: disallow-latest-and-require-digest
+    rule: no-latest-tag
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: bad-deployment.yaml
+    result: fail
+  - policy: disallow-host-namespaces-and-hostpath
+    rule: no-host-network-pid-ipc
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: good-deployment.yaml
+    result: pass
+  - policy: require-restricted-securitycontext
+    rule: require-non-root-and-readonly-fs
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: good-deployment.yaml
+    result: pass
+  - policy: disallow-latest-and-require-digest
+    rule: require-digest
+    resource: accounts-api
+    kind: Deployment
+    patchedResource: good-deployment.yaml
+    result: pass

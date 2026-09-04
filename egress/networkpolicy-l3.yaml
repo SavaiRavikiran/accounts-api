@@ -1,0 +1,41 @@
+# Layer 3/4 baseline — works on any CNI, ships day one.
+# This is k8s/networkpolicy.yaml's egress block, reproduced here as the
+# canonical "what does the network layer allow" artefact for Section 5.
+# Threat: T-06. Limitation: NetworkPolicy has no concept of a hostname/FQDN,
+# so the KYC provider is allowed by "not-RFC1918 HTTPS", not by its identity —
+# see ciliumnetworkpolicy-l7.yaml for the tighter control and EGRESS.md for
+# what even that still fails to stop.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: accounts-api-egress-l3
+  namespace: accounts
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: accounts-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

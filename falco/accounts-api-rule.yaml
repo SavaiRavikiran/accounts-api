@@ -1,0 +1,68 @@
+# Custom Falco rule for accounts-api — written for this workload, not the
+# stock ruleset. Threat: T-05 (secret exfiltration via a second read path).
+#
+# The app reads /var/run/secrets/app/db-url exactly once at startup (main.go
+# os.Stat + the DB client's own open). Any read of that path more than a few
+# seconds after container start is not the application — it's someone (an
+# RCE'd process, a debug shell, a sidecar gone rogue) pulling the DB
+# credential off disk a second time.
+
+- rule: Accounts API DB Secret Read After Startup
+  desc: >
+    Detects a read of the accounts-api database secret file by any process
+    other than the expected startup read, which indicates the credential is
+    being exfiltrated via filesystem access rather than the app's normal
+    single read at boot.
+  condition: >
+    open_read
+    and container.image.repository = "ghcr.io/digitalbank/accounts-api"
+    and fd.name = "/var/run/secrets/app/db-url"
+    and proc.duration > 30000000000
+  output: >
+    Accounts API DB secret read after startup window
+    (container=%container.id image=%container.image.repository
+    process=%proc.name pid=%proc.pid cmdline=%proc.cmdline
+    file=%fd.name user=%user.name k8s.ns=%k8s.ns.name k8s.pod=%k8s.pod.name)
+  priority: CRITICAL
+  tags: [accounts-api, T-05, secrets, exfiltration]
+
+# --- Alert payload, routing, and runbook -----------------------------------
+#
+# Alert payload (delivered as JSON via the Falco sidekick/exporter to the
+# team's alerting pipeline, e.g. Falcosidekick -> SNS -> PagerDuty):
+#
+#   {
+#     "rule": "Accounts API DB Secret Read After Startup",
+#     "priority": "CRITICAL",
+#     "output": "<rendered output line above>",
+#     "output_fields": {
+#       "container.id": "...", "k8s.pod.name": "accounts-api-7f...",
+#       "k8s.ns.name": "accounts", "proc.name": "...", "proc.cmdline": "...",
+#       "user.name": "...", "fd.name": "/var/run/secrets/app/db-url"
+#     },
+#     "time": "2026-09-04T12:00:00Z",
+#     "hostname": "ip-10-0-3-21.ap-south-1.compute.internal"
+#   }
+#
+# Routing: Falcosidekick -> SNS topic "accounts-api-security-critical" ->
+# PagerDuty service "accounts-api-oncall" (paging, not email — priority
+# CRITICAL) with a copy to the #accounts-api-security Slack channel for
+# visibility.
+#
+# Who is woken: the accounts-api platform on-call (one of the two platform
+# engineers named in the assessment scope; this service has no dedicated
+# security team, so the platform rotation owns paging for it).
+#
+# Responder's first three steps:
+#   1. Isolate: cordon the node and delete/quarantine the specific pod
+#      (`kubectl delete pod <pod> -n accounts`) rather than the whole
+#      deployment, to preserve the other replicas and stop the bleeding
+#      without a full outage.
+#   2. Capture: snapshot the pod's logs, the Falco alert payload, and (if the
+#      node is still up) `kubectl debug` a copy of the container's filesystem
+#      before it is rescheduled — this is the forensic evidence, and Kubernetes
+#      will otherwise destroy it on pod deletion.
+#   3. Rotate: trigger emergency rotation of the DB credential and any other
+#      secret in that pod's mount (see docs/ROTATION.md break-glass path) on
+#      the assumption the credential is already compromised — do this before
+#      root-causing, not after.

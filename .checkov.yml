@@ -1,0 +1,7 @@
+framework:
+  - terraform
+directory:
+  - terraform
+skip-path:
+  - terraform/original # the intentionally-vulnerable reference artefact from Section 4
+soft-fail: false

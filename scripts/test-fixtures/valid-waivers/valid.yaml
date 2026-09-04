@@ -1,0 +1,8 @@
+id: CVE-2024-VALID
+tool: trivy
+scope: app/go.sum
+reason: fixture — expires in the future
+requested_by: jdoe@digitalbank.com
+approved_by: platform-lead@digitalbank.com
+created: 2026-08-20
+expires: 2099-01-01

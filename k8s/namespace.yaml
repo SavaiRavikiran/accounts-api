@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: accounts
+  labels:
+    app.kubernetes.io/part-of: accounts-api
+    # T-08 / T-13: PSS Restricted is the cluster baseline.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    # Kyverno / network-policy selectors.
+    security.digitalbank/system: accounts-api

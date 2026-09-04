@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOwnSecretOnly",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+      "Resource": "arn:aws:secretsmanager:ap-south-1:111111111111:secret:accounts-api/*"
+    },
+    {
+      "Sid": "DecryptWithServiceCMKOnly",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:ap-south-1:111111111111:key/accounts-api-secrets-cmk",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "secretsmanager.ap-south-1.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

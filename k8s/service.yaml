@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: accounts-api
+  namespace: accounts
+  labels:
+    app.kubernetes.io/name: accounts-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: accounts-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

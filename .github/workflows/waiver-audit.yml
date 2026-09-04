@@ -1,0 +1,31 @@
+# Catches a waiver lapsing on a quiet week with no PRs touching waivers/.
+name: waiver-audit
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily, 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check-waivers.sh
+      - name: Open/update tracking issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "One or more waivers have expired";
+            const body = "The daily waiver audit failed — see the workflow run for which waiver(s) lapsed. Renew with new approval or fix the underlying finding.";
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: "open", labels: "waiver-expired",
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ["waiver-expired"],
+              });
+            }

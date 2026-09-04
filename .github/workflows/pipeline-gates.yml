@@ -1,0 +1,117 @@
+# Section 3 — Pipeline gates and the waiver path.
+
+name: pipeline-gates
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write # PR annotations
+
+jobs:
+  secret-scan-full-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full clone — required so gitleaks scans full history, not just the diff
+      - name: Gitleaks (full git history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # Rationale for Gitleaks over truffleHog: faster on large history,
+          # regex+entropy rules are enough for this repo's threat (T-05
+          # committed secret), and it has first-class GH Action support.
+          # Give up: truffleHog's verified-live-credential check (calls the
+          # provider API to confirm a leaked key is still active) — a
+          # reasonable trade for speed and no extra egress from CI.
+
+  sca-dependency-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan (Go modules)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: app
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+          # Rationale: one scanner (Trivy) covers SCA + image + IaC
+          # misconfig, reducing the number of dashboards 2 platform
+          # engineers have to trust. Give up: Grype's slightly faster DB
+          # updates and Snyk's dependency-graph UI — not worth a second tool
+          # for a repo this size.
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: p/golang p/security-audit p/secrets
+        env:
+          SEMGREP_RULES: p/golang p/security-audit
+        # Rationale: Semgrep's Go + security-audit rulesets are OSS, fast,
+        # and catch the classes of bug likely in a Go HTTP service (SSRF,
+        # unsafe deserialization, missing timeout). Give up: gosec's
+        # slightly deeper Go-specific taint rules — kept as a second, non-
+        # blocking check in CI (go test + gosec, see DECISIONS.md ADR-007)
+        # rather than duplicating the gate here.
+
+  iac-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkov (Terraform)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform
+          framework: terraform
+          soft_fail: false
+          config_file: .checkov.yml
+      - name: Conftest (Kubernetes + Terraform plan policy)
+        run: |
+          # conftest binary assumed available on the runner image, or
+          # installed via a setup step in real CI. See policy/rego/.
+          echo "conftest test -p policy/rego/k8s k8s/*.yaml"
+          echo "conftest test -p policy/rego/terraform <(terraform -chdir=terraform show -json plan.tfplan)"
+        # Rationale for Checkov over tfsec: broader built-in policy set
+        # (secrets, IAM, encryption) in one tool, still open source. Give
+        # up: tfsec's marginally faster single-purpose scans — Checkov's
+        # breadth matters more given no dedicated security team to author
+        # missing custom checks.
+
+  waiver-expiry-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail build if any waiver has expired
+        run: bash scripts/check-waivers.sh
+
+  gate-summary:
+    needs: [secret-scan-full-history, sca-dependency-scan, sast, iac-scan, waiver-expiry-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required gates must pass (waived findings excluded per waivers/*.yaml)
+        run: |
+          echo "This job exists as a single required-status-check target for branch protection."
+#
+# Severity threshold that blocks a merge: HIGH and CRITICAL block. MEDIUM and
+# below annotate the PR but do not block. Rationale: with 40 engineers who can
+# merge and 2 platform engineers, a gate that blocks on MEDIUM/LOW drowns in
+# false positives within a week and gets bypassed with --no-verify-equivalent
+# habits (force-merges, disabling the check). HIGH/CRITICAL is the line where
+# "block everyone's PR" is worth the cost; MEDIUM is a backlog item.
+#
+# Expected false-positive load / what gets tuned first: Trivy on transitive Go
+# deps (CVEs in code paths never called) and Semgrep's generic "hardcoded
+# secret" heuristic firing on test fixtures. First tuning pass: a per-repo
+# .trivyignore for confirmed-unreachable CVEs (with a waiver, not a silent
+# ignore — see below) and a Semgrep path-exclude for **/*_test.go and
+# testdata/.

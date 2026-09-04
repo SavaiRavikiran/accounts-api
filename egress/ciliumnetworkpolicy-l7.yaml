@@ -1,0 +1,44 @@
+# Layer 7 tightening — requires Cilium as the CNI (documented assumption: if
+# the cluster runs a different CNI without FQDN-aware egress, e.g. stock
+# VPC CNI, this policy doesn't apply and the L3 policy is the real control;
+# an egress proxy/NAT gateway with an explicit allow-list domain would be the
+# substitute — see EGRESS.md).
+#
+# This restricts accounts-api's egress to DNS, the AWS/Secrets Manager
+# endpoints (still IP-range based — see note in EGRESS.md), and specifically
+# the KYC provider's hostname rather than "any HTTPS destination outside the
+# VPC." Threat: T-06.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: accounts-api-egress-l7
+  namespace: accounts
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: accounts-api
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: "kyc-provider.example.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: "secretsmanager.ap-south-1.amazonaws.com"
+        - matchName: "sts.ap-south-1.amazonaws.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

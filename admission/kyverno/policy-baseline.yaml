@@ -1,0 +1,176 @@
+# Section 5 — admission baseline. Mirrors policy/rego/k8s/*.rego (CI gate) so the
+# same rule is enforced pre-merge and at the cluster boundary (ADR-001).
+#
+# Rollout mode: every policy below ships `validationFailureAction: Audit` on day
+# one in this shared, dozen-team cluster — see docs/SECTION5-ADMISSION-RUNTIME.md
+# for the promotion criteria and per-policy target date.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-host-namespaces-and-hostpath
+  annotations:
+    policies.kyverno.io/severity: high
+    digitalbank.com/threat: T-08
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: no-host-network-pid-ipc
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "hostNetwork, hostPID, and hostIPC are not permitted (T-08)."
+        pattern:
+          spec:
+            =(hostNetwork): "false"
+            =(hostPID): "false"
+            =(hostIPC): "false"
+    - name: no-hostpath-volumes
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "hostPath volumes are not permitted (T-08: node filesystem / docker.sock escape)."
+        foreach:
+          - list: "request.object.spec.volumes[]"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.hostPath }}"
+                    operator: NotEquals
+                    value: null
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-restricted-securitycontext
+  annotations:
+    policies.kyverno.io/severity: high
+    digitalbank.com/threat: T-08,T-15
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-non-root-and-readonly-fs
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "Containers must run as non-root with a read-only root filesystem, no privilege escalation, and ALL capabilities dropped (T-08, T-15)."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+                  privileged: "false"
+                  capabilities:
+                    drop:
+                      - ALL
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-and-require-digest
+  annotations:
+    policies.kyverno.io/severity: medium
+    digitalbank.com/threat: T-02
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: no-latest-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "Image tag ':latest' is not permitted; use a pinned, digest-referenced image (T-02)."
+        foreach:
+          - list: "request.object.spec.containers[]"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: AnyIn
+                    value: ["*:latest"]
+    - name: require-digest
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "Image must be pinned by digest (@sha256:...) (T-02)."
+        foreach:
+          - list: "request.object.spec.containers[]"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ contains(element.image, '@sha256:') }}"
+                    operator: Equals
+                    value: false
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/severity: medium
+    digitalbank.com/threat: T-07
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-cpu-memory-limits
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      validate:
+        message: "Every container must declare CPU and memory requests and limits (T-07: noisy-neighbour DoS on a shared cluster)."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signature
+  annotations:
+    policies.kyverno.io/severity: high
+    digitalbank.com/threat: T-02
+spec:
+  # Enforced from day one: an unsigned image is the one control we do not
+  # soften, because it is the last check before an image runs at all, and
+  # the signature is produced automatically by CI (no engineer friction).
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: verify-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["accounts"]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/digitalbank/accounts-api:*"
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: "https://github.com/digitalbank/accounts-api/.github/workflows/*"
+                    issuer: "https://token.actions.githubusercontent.com"
