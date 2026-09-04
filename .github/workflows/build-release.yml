@@ -134,7 +134,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
         run: |
-          gh attestation verify "oci://${IMAGE_REF}" --owner "${GITHUB_REPOSITORY_OWNER}"
+          gh attestation verify "oci://${IMAGE_REF}" \
+            --owner "${GITHUB_REPOSITORY_OWNER}" \
+            --predicate-type "https://spdx.dev/Document/v2.3"
 
   deploy:
     needs: [build, verify]
